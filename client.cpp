@@ -22,86 +22,74 @@ int nNetTimeout=1000;//1秒，
              socket-->sendto-->revcfrom-->close
 */
 
-void udp_msg_sender(int fd,struct sockaddr* dst);//no connect
+//---------------------------------------------------------
+//connect make sure to be connected
 bool udp_connect(int fd,struct sockaddr* dst);
-void sendfile(int fd);
+//send file, called if_getack(),and called resend()
+void sendfile(int fd,const char* filename);
+//make sure server recived
 int ifgetack(int fd);
+//when one time didn't get ack, then resent
 int resend(char*,int);
+//---------------------------------------------------------
+
 
 int main(int argc,char*argv[])
 {
-    int client_fd;// in linux int=socket
-    struct sockaddr_in ser_addr;
+    //----------------------------------------init-------------------------------------------------
+    int client_fd;                         // in linux int=socket
+    struct sockaddr_in ser_addr;           //server address
+    struct timeval timeout = {3,0};        //to set a rev waiting time
 
-    struct timeval timeout = {3,0};  
-
-    client_fd=socket(AF_INET,SOCK_DGRAM,0);//AF_INET:IPV4,SOCK_DGRAM:UDP
     setsockopt(client_fd,SOL_SOCKET,SO_RCVTIMEO, (char *)&timeout,sizeof(struct timeval));//set overtime
-
+    client_fd=socket(AF_INET,SOCK_DGRAM,0);//AF_INET:IPV4,SOCK_DGRAM:UDP
     if(client_fd<0)
     {
         printf("create socket failed!\n");
         return-1;
     }
-
     memset(&ser_addr,0,sizeof(ser_addr));
     ser_addr.sin_family=AF_INET;
     //ser_addr.sin_addr.s_addr=inet_addr(SERVER_IP);
     ser_addr.sin_addr.s_addr=htonl(INADDR_ANY);//IP地址，需要进行网络序转换，INADDR_ANY：本地地址
     ser_addr.sin_port=htons(SERVER_PORT);//端口号，需要网络序转换
-    
-    //udp_msg_sender(client_fd,(struct sockaddr*)&ser_addr);
+    //----------------------------------------------------------------------------------------------
+
+
+    //--------------------------------------connect---------------------------------------------------
     if(udp_connect(client_fd,(struct sockaddr*)&ser_addr)==false)//if connect fail 
             return 2;
     //cout<<"test"<<endl;
-    sendfile(client_fd);
+    //--------------------------------------sendfile)--------------------------------------------------
+    const char * filename{"helloworld.txt"};
+    sendfile(client_fd,filename);
+
+    //-------------------------------------------------------------------------------------------------
     close(client_fd);
     return 0;
  
 }
 
-void udp_msg_sender(int fd,struct sockaddr* dst)
-/*how to deal with */
-{
-    socklen_t len;
-    struct  sockaddr_in src;//client_addr is senders' address
-    while(1)
-    {
-        char buf[BUFF_LEN];
-        cin.getline(buf,BUFF_LEN);
-        printf("client:%s\n",buf);  //打印自己发送的信息
-        len=sizeof(*dst);
-        sendto(fd,buf,BUFF_LEN,0,dst,len);
-        memset(buf,0,BUFF_LEN);//init buf
-        recvfrom(fd,buf,BUFF_LEN,0,(struct sockaddr*)&src,&len);
-        printf("server:%s\n",buf);
-        sleep(1);// send every second
-    }
-    
-}
 
 bool udp_connect(int fd, struct sockaddr* to )
 {
-    char buf[10] = "200";
-    int n = 0;
-    int reconnect;
+    char buf[10] = "200"; 
 
-    //if(connect(fd, to, sizeof(*to)))// reconnect try 5 times.
+    //----------------------reconnect try 5 times.--------------------------------
     {
-        for(reconnect=0;reconnect<5;reconnect++)
+        for(int reconnect=0;reconnect<5;reconnect++)
         {
-            if(connect(fd, to, sizeof(*to))==0)
+            if(connect(fd, to, sizeof(*to))==0)//connect successfully
             {
-                send(fd,buf,BUFF_LEN,0);
+                send(fd,buf,BUFF_LEN,0);       // send to server 200
                 memset(buf,0,10);
                 int count=recv(fd,buf,BUFF_LEN,0);
                 //cout<<count;
-                if (count==-1)
+                if (count==-1)         // can't get 201 from server
                 {
                     cout<<"connection not established."<<endl;
                     return 0;
                 }
-                cout<<buf<<endl;
                 if(!strcmp(buf,"201"))
                 {
                     cout<<"connection established."<<endl;
@@ -113,12 +101,15 @@ bool udp_connect(int fd, struct sockaddr* to )
     //else return;// success
 }
 
-void sendfile(int fd)
+void sendfile(int fd,const char* c)
 {
     char buf[BUFF_LEN];
-    ifstream file(("helloworld.txt"),ios::binary);
+    int sendsize;
+    int order=0;
+    //-------------------------open file--------------------------------
+    ifstream file(c,ios::binary);
     file.seekg( 0, ios::end );
-	int filesize = file.tellg();
+	int filesize = file.tellg();//get how big the file is.
     file.seekg(0,ios::beg);
     if(file.is_open())
     {
@@ -128,39 +119,45 @@ void sendfile(int fd)
         cout<<"fail to read file";
         return;
     }
-    int sendsize;
-    int order=0;
+    //---------------------------------------------------------------------
+
+    // read and send the file block
     while(!file.eof())
     {
         sendsize=512;
-        //cout<<"test2";
-        //sleep(2);
         memset(buf,0,1024);
-        cout<<filesize<<" "<<file.tellg()<<endl;
-        //sleep(2);
+        sleep(1);
+        //-------------------------read blocks----------------------------------
         if(filesize-file.tellg()>=512)
+            //normally send 512
             file.read(buf,512);                      // read
         else{
+            //when there's no enough data to form a 512 byte data
             sendsize=filesize-file.tellg()+1;
             file.read(buf,sendsize);
-            break;
+            
         }
+        //------------------------------------------------------------------------
+
+        //---------fileblock-->buf-->message.d--->memset(buf)-->message-->buf-->send(buf)---------------
         datagram message(fd,order,buf,sendsize);//datagram get read in message.d
-        message.cal_checksum((unsigned short*)&message,
-                             sizeof((unsigned short*)&message));
         memset(buf,0,1024);
         memcpy(buf,&message,sizeof(message));   // buf get message
-        //cout<<message.d;
+        message.checksum=message.cal_checksum((unsigned short*)message.d,sizeof(message.d)/sizeof(unsigned short));
+        //cout<<message.checksum<<endl;
         send(fd,buf,1024,0);
+        if (!ifgetack(fd))
+            resend(buf,fd);
+
+        //-----------------------mistake or lost check----------------------------
         if(!ifgetack(fd))//if send fail, RESEND
             if(!resend(buf,fd))//if resend fail,print message;
                 cout<<"resend still fail"<<endl;
-
+        //------------------------------------------------------------------------
         order++;
     }
     cout<<"all done"<<endl;
     file.close();
-    cout<<"test"<<endl;
 }
 
 int ifgetack(int fd)
@@ -176,6 +173,7 @@ int ifgetack(int fd)
 
 int resend(char*buf,int fd)
 {
+    //--------------try resend the message for 5 times
     for(int i=0;i<5;i++)
     {
         send(fd,buf,BUFF_LEN,0);

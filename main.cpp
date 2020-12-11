@@ -95,11 +95,18 @@ void getfile(int fd)
         int count=recv(fd, buf, BUFF_LEN, 0);
         acknowledge(fd);
         memcpy(&message,buf,sizeof(message));//!!!!
-        file.write(message.d,message.sendsize);
-        if (message.sendsize!=512)
-            break;
-        cout<<"get "<<count<<" bytes"<<endl;
-        order++;
+        
+        unsigned short temp=message.checksum=message.cal_checksum((unsigned short*)message.d,sizeof(message.d)/sizeof(unsigned short));
+        if(~temp+message.checksum==-1)
+        {    acknowledge(fd);
+
+            //cout<<message.checksum<<endl;
+            file.write(message.d,message.sendsize);
+            if (message.sendsize!=512)
+                break;
+            cout<<"get "<<count<<" bytes"<<endl;
+            order++;
+        }
     }
     file.close();
 }
